@@ -26,13 +26,14 @@ class MoondreamModel():
     :param mmproj: path/HF Hub URL to the mmproj
     :return: MoondreamModel instance
     """
-    self.model = AutoModelForCausalLM.from_pretrained(model, cache_dir="/voldemort", device_map="cuda:0", torch_dtype=torch.float16, revision = "2024-04-02", trust_remote_code=True)
-    self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, cache_dir="/voldemort", device_map="cuda:0", revision = "2024-04-02", trust_remote_code=True)
+    self.model = AutoModelForCausalLM.from_pretrained(model, cache_dir="/voldemort", device_map={'': 'cuda'}, torch_dtype=torch.float16, revision = "2024-04-02", trust_remote_code=True)
+    self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, cache_dir="/voldemort", device_map={'': 'cuda'}, revision = "2024-04-02", trust_remote_code=True)
     self.device="cuda:0"
 
   
   def format(self, content):
-    return "Hi! I am a visually oriented model. I literally can't think unless I can see something! Send a picture or I probably won't say anything that makes sense! Here's a description of the wall of my cell for you. \n```text\n" + self.model.answer_question(self.model.encode_image(PImage.open("/voldemort/blank.png")), content, self.tokenizer) + "\n```"
+    with open("/voldemort/blank.png", "rb") as f:
+        return "*Without an image, all I can see is a blank, grey wall.*\n\n```text\n" + self.model.answer_question(self.model.encode_image(PImage.open("/voldemort/blank.png")), content, self.tokenizer) + "\n\n```\n\n"
 
   def __call__(self, messages, **kwargs):
     """
@@ -57,17 +58,20 @@ class MoondreamModel():
     last_msg = messages[-1]
     img: PImage = None
     content = last_msg['content']
-    if type(content) is not str and content is not str:
-        for cont in content:
-            if cont['type'] == "image":
-                img = cont['image']
-                img = self.model.encode_image(img)
-                question = last_msg['content'][0]['text']
-                return "```text\n" + self.model.answer_question(img, last_msg['content'][0]['text'], self.tokenizer)+ "\n```"
+    img = None
+    txt = None
+    for cont in content:
+        if cont['type'] == 'text':
+            txt = cont['text']
+        if cont['type'] == "image":
+            img = cont['image']
+            img = self.model.encode_image(img)
+    if txt is None:
+        txt = "Describe the image."
+    if img is not None:
+        return "```text\n" + self.model.answer_question(img, txt, self.tokenizer)+ "\n```"
     else:
-
-        return self.format(content)
-
+        return self.format(txt)    
     raise UnboundLocalError("No image found in message")
 
 MAX_TOKENS = 8192
@@ -76,12 +80,7 @@ MAX_OUTPUT = (MAX_TOKENS/2)
 SYSTEM_PROMPT = "You are a helpful, morally upstanding assistant. Follow directions to the letter. Pay attention."
 
 def mkhist(history: list):
-    shadowhist = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT
-        }
-    ]
+    shadowhist = []
     count = 0
     for itm in history:
         if (len(itm.content)*4)+count > MAX_INPUT:
@@ -128,29 +127,34 @@ class Moondream2Bot(fp.PoeBot):
         print(attachments)
         imgs = []
         for att in attachments:
-            if att.content_type == "image/png":
+            if att.content_type.startswith("image"):
+                typ = "png"
+                if att.content_type.endswith("jpeg") or att.content_type.endswith("jpg"):
+                    typ = "jpeg"
+                if att.content_type.endswith("gif"):
+                    typ = "gif"
                 res = requests.get(att.url)
                 if res.status_code != 200:
                     print("Download error")
                 bts = res.content
-                with open("tmp.png", "wb") as f:
+                with open("tmp." +typ, "wb") as f:
                     f.write(res.content)
                     f.flush()
                 img = None
-                with PImage.open("tmp.png") as img:
+                with PImage.open("tmp."+typ) as img:
                     img = img.resize((256,256))
-                    img.save("tmp.png")
+                    img.save("tmp."+typ)
                 imgs.append(img)
+        hist[-1] = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": hist[-1]['content']
+                }
+            ]
+        }
         if len(imgs) > 0:
-            hist[-1] = {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": hist[-1]['content']
-                    }
-                ]
-            }
             for img in imgs:
                 hist[-1]['content'].append({
                     "type": "image",
