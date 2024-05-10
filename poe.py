@@ -28,7 +28,7 @@ class MoondreamModel():
     :param mmproj: path/HF Hub URL to the mmproj
     :return: MoondreamModel instance
     """
-    self.model = AutoModelForCausalLM.from_pretrained(model, cache_dir="/voldemort", device_map={'': 'cuda'}, torch_dtype=torch.float16, revision = "2024-04-02", trust_remote_code=True)
+    self.model = AutoModelForCausalLM.from_pretrained(model, device_map={'': 'cuda'}, torch_dtype=torch.float16, revision = "2024-04-02", trust_remote_code=True)
     self.model.eval()
     self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, cache_dir="/voldemort", device_map={'': 'cuda'}, revision = "2024-04-02", trust_remote_code=True)
     self.device="cuda:0"
@@ -119,7 +119,7 @@ def mkreq(history):
         "top_k": 100,
         "streaming": True,
     }
-    mdl_instance = MoondreamModel(model="vikhyatk/moondream2", tokenizer="vikhyatk/moondream2")
+    mdl_instance = MoondreamModel(model="/voldemort/moondream2", tokenizer="vikhyatk/moondream2")
     print(history)
     res = mdl_instance(message=history[-2], **req)
     return res
