@@ -1,6 +1,8 @@
+![moondream2](icon.png)
+
 # Moondream2 Poe Bot
 
-This repository contains the code for a Poe bot powered by the Moondream2 model.ondream2 is a large language model capable of understanding and generating text, as well as comprehending images.
+This repository contains the code for a Poe bot powered by the Moondream2 model. Moondream2 is a large language model capable of understanding and generating text, as well as comprehending images.
 
 ## Features
 
