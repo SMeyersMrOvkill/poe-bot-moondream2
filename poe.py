@@ -13,8 +13,10 @@ import requests
 from PIL import Image as PImage
 import modal
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import TextIteratorStreamer, AutoTokenizer, AutoModelForCausalLM
 import torch
+
+import threading
 
 class MoondreamModel():
   def __init__(self, model: str, tokenizer: str):
@@ -27,14 +29,21 @@ class MoondreamModel():
     :return: MoondreamModel instance
     """
     self.model = AutoModelForCausalLM.from_pretrained(model, cache_dir="/voldemort", device_map={'': 'cuda'}, torch_dtype=torch.float16, revision = "2024-04-02", trust_remote_code=True)
+    self.model.eval()
     self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, cache_dir="/voldemort", device_map={'': 'cuda'}, revision = "2024-04-02", trust_remote_code=True)
     self.device="cuda:0"
-
+    self.streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
   
   def format(self, content):
     with open("/voldemort/blank.png", "rb") as f:
-        return "*Without an image, all I can see is a blank, grey wall.*\n\n```text\n" + self.model.answer_question(self.model.encode_image(PImage.open("/voldemort/blank.png")), content, self.tokenizer) + "\n\n```\n\n"
+        return "*Without an image, all I can see is a blank, grey wall.*\n\n```text\n" + self.model.answer_question(self.model.encode_image(PImage.open("/voldemort/blank.png")), content, self.tokenizer, streamer=self.streamer) + "\n\n```\n\n"
 
+  def _infer(self, **kwargs):
+        img = kwargs['img']
+        prompt = kwargs['prompt']
+        img = self.model.encode_image(img)
+        return self.model.answer_question(image_embeds=img, question=prompt, tokenizer=self.tokenizer, streamer=self.streamer)
+  
   def __call__(self, message, **kwargs):
     """
     Overrides Object.__call__(self, **kwargs)
@@ -62,15 +71,18 @@ class MoondreamModel():
             txt = cont['text']
         if cont['type'] == "image":
             img = cont['image']
-            img = self.model.encode_image(img)
     if txt is None and img is None:
         return self.format(".")
     if txt is None:
         txt = "Describe the image."
     if img is None:
         img = PImage.open("/voldemort/blank.png")
-        img = self.model.encode_image(img)
-    return "```text\n" + self.model.answer_question(img, txt, self.tokenizer)+ "\n```"
+    t = threading.Thread(target=self._infer, kwargs={
+        "img": img,
+        "prompt": txt
+    })
+    t.run()
+    yield self.streamer
 
 MAX_TOKENS = 8192
 MAX_INPUT = (MAX_TOKENS/2)
@@ -105,6 +117,7 @@ def mkreq(history):
         "temperature": 0.123,
         "top_p": 0.85,
         "top_k": 100,
+        "streaming": True,
     }
     mdl_instance = MoondreamModel(model="vikhyatk/moondream2", tokenizer="vikhyatk/moondream2")
     print(history)
@@ -149,6 +162,23 @@ class Moondream2Bot(fp.PoeBot):
                     img = img.resize((256,256))
                     img.save("tmp."+typ)
                 imgs.append(img)
+        if len(hist) < 2:
+            hist = [
+                *hist,
+                {
+                    "role": 'user',
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "."
+                        },
+                        {
+                            "type": "image",
+                            "image": PImage.open("/voldemort/blank.png")
+                        }
+                    ]
+                }
+            ]
         if len(imgs) > 0:
             for img in imgs:
                 hist[-2]['content'].append({
@@ -157,8 +187,15 @@ class Moondream2Bot(fp.PoeBot):
                 })
                 break
         txt = mkreq(hist)
-        print(txt)
-        yield fp.PartialResponse(text=txt, is_replace_response=True)
+        text = ""
+        enumerate(txt)
+        for x in txt:
+            for y in x:
+                text += y
+                yield fp.PartialResponse(text=text)
+            break
+        print(text)
+        yield fp.PartialResponse(text=text, is_replace_response=True)
         return
 
 REQUIREMENTS = ["fastapi-poe==0.0.28", "requests", "transformers", "einops", "huggingface-hub", "accelerate", "pillow", "torch", "torchvision"]
@@ -166,7 +203,7 @@ image = Image.debian_slim().pip_install(*REQUIREMENTS)
 app = Stub("dcw-moondream2")
 voldemort = modal.Volume.from_name("voldemort")
 
-@app.function(image=image, gpu=modal.gpu.T4(), volumes={"/voldemort": voldemort})
+@app.function(image=image, gpu=modal.gpu.T4(), volumes={"/voldemort": voldemort}, keep_warm=1)
 @asgi_app()
 def fastapi_app():
     bot = Moondream2Bot()
