@@ -35,7 +35,7 @@ class MoondreamModel():
     with open("/voldemort/blank.png", "rb") as f:
         return "*Without an image, all I can see is a blank, grey wall.*\n\n```text\n" + self.model.answer_question(self.model.encode_image(PImage.open("/voldemort/blank.png")), content, self.tokenizer) + "\n\n```\n\n"
 
-  def __call__(self, messages, **kwargs):
+  def __call__(self, message, **kwargs):
     """
     Overrides Object.__call__(self, **kwargs)
 
@@ -54,11 +54,8 @@ class MoondreamModel():
     :param stop: The stop sequence(s), a list[str]
     :return: LLM response
     """
-    print(messages)
-    last_msg = messages[-1]
     img: PImage = None
-    content = last_msg['content']
-    img = None
+    content = message['content']
     txt = None
     for cont in content:
         if cont['type'] == 'text':
@@ -66,13 +63,14 @@ class MoondreamModel():
         if cont['type'] == "image":
             img = cont['image']
             img = self.model.encode_image(img)
+    if txt is None and img is None:
+        return self.format(".")
     if txt is None:
         txt = "Describe the image."
-    if img is not None:
-        return "```text\n" + self.model.answer_question(img, txt, self.tokenizer)+ "\n```"
-    else:
-        return self.format(txt)    
-    raise UnboundLocalError("No image found in message")
+    if img is None:
+        img = PImage.open("/voldemort/blank.png")
+        img = self.model.encode_image(img)
+    return "```text\n" + self.model.answer_question(img, txt, self.tokenizer)+ "\n```"
 
 MAX_TOKENS = 8192
 MAX_INPUT = (MAX_TOKENS/2)
@@ -82,30 +80,35 @@ SYSTEM_PROMPT = "You are a helpful, morally upstanding assistant. Follow directi
 def mkhist(history: list):
     shadowhist = []
     count = 0
-    for itm in history:
-        if (len(itm.content)*4)+count > MAX_INPUT:
-            if itm.role == "bot":
-                shadowhist.pop()
-                shadowhist.append({"role": "user", "content": "."})
-                break
-            break
-        elif itm.content.startswith("@"):
-            continue
+    # Iterate backward through the OpenAI Chat History to trim the length and extract from obj to dict.
+    for i in range(len(history) - 1, -1, -1):
+        if count < 2:
+            shadowhist.append(
+                {
+                    "role": history[i].role,
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": history[i].content
+                        }
+                    ]
+                }
+            )
+            count += 1
         else:
-            shadowhist.append({"role": itm.role, "content": itm.content})
-        count += len(itm.content)*4
+            break
     return shadowhist
 
 def mkreq(history):
     req = {
         "max_tokens": MAX_OUTPUT,
-        "temperature": 0.1,
+        "temperature": 0.123,
         "top_p": 0.85,
-        "top_k": 16,
+        "top_k": 100,
     }
     mdl_instance = MoondreamModel(model="vikhyatk/moondream2", tokenizer="vikhyatk/moondream2")
     print(history)
-    res = mdl_instance(messages=history, **req)
+    res = mdl_instance(message=history[-2], **req)
     return res
 
 class Moondream2Bot(fp.PoeBot):
@@ -115,7 +118,8 @@ class Moondream2Bot(fp.PoeBot):
         return fp.SettingsResponse(
             allow_attachments=True,
             insert_attachments_to_message=True,
-            enable_image_comprehension=True
+            enable_image_comprehension=True,
+            enable_multi_bot_chat_prompting=True
         )
     async def insert_attachment_messages(self, query_request: fp.QueryRequest) -> fp.QueryRequest:
         print(query_request.query.attachments)
@@ -145,18 +149,9 @@ class Moondream2Bot(fp.PoeBot):
                     img = img.resize((256,256))
                     img.save("tmp."+typ)
                 imgs.append(img)
-        hist[-1] = {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": hist[-1]['content']
-                }
-            ]
-        }
         if len(imgs) > 0:
             for img in imgs:
-                hist[-1]['content'].append({
+                hist[-2]['content'].append({
                     "type": "image",
                     "image": img
                 })
