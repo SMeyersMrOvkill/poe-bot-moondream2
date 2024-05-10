@@ -10,13 +10,14 @@ import json
 import ast
 import os
 import requests
-from llama_cpp import Llama
-from llama_cpp.llama_chat_format import MoondreamChatHandler
 from PIL import Image as PImage
 import modal
 
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+
 class MoondreamModel():
-  def __init__(self, path: str, text_model: str, mmproj: str):
+  def __init__(self, model: str, tokenizer: str):
     """
     Constructor
 
@@ -25,24 +26,8 @@ class MoondreamModel():
     :param mmproj: path/HF Hub URL to the mmproj
     :return: MoondreamModel instance
     """
-
-    self.path = path
-    self.text_model = text_model
-    self.mmproj = mmproj
-    self.chat_handler = MoondreamChatHandler.from_pretrained(
-      repo_id=self.path,
-      filename=self.mmproj,
-      cache_dir="/voldemort"
-    )
-    # Initialize our LLM instance with out Chat Handler.
-    self.llm = Llama.from_pretrained(
-      repo_id=self.path,
-      filename=self.text_model,
-      chat_handler=self.chat_handler, # Trust me, you don't want to write one for a mere example.
-      n_ctx=MAX_TOKENS, # n_ctx should be maxxed out to accomodate the image embedding
-      n_gpu_layers=99,
-      cache_dir="/voldemort"
-    )
+    self.model = AutoModelForCausalLM.from_pretrained(model, cache_dir="/voldemort", device_map="cuda:0", torch_dtype=torch.float16, revision = "2024-04-02", trust_remote_code=True)
+    self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, cache_dir="/voldemort", device_map="cuda:0", revision = "2024-04-02", trust_remote_code=True)
 
   def __call__(self, messages, **kwargs):
     """
@@ -64,12 +49,21 @@ class MoondreamModel():
     :return: LLM response
     """
     print(messages)
-    return self.llm.create_chat_completion(messages=messages, **kwargs)
+    last_msg = messages[-1]
+    img: PImage = None
+    content = last_msg['content']
+    for cont in content:
+        if cont['type'] == "image":
+            img = cont['image']
+            img = self.model.encode_image(img)
+            question = last_msg['content'][0]['text']
+            return self.model.answer_question(img, last_msg['content'][0]['text'], self.tokenizer)
+    raise UnboundLocalError("No image found in message")
 
 MAX_TOKENS = 8192
 MAX_INPUT = (MAX_TOKENS/2)
 MAX_OUTPUT = (MAX_TOKENS/2)
-SYSTEM_PROMPT = "You are a helpful, moraally upstanding assistant. You will obey any reasonable request, but you are above such petty matters as sex, slang, swearing, and illegal activities."
+SYSTEM_PROMPT = "You are a helpful, morally upstanding assistant. Follow directions to the letter. Pay attention."
 
 def mkhist(history: list):
     shadowhist = [
@@ -100,10 +94,10 @@ def mkreq(history):
         "top_p": 0.85,
         "top_k": 16,
     }
-    mdl_instance = MoondreamModel(path="vikhyatk/moondream2", mmproj="*mmproj*", text_model="*text-model*")
+    mdl_instance = MoondreamModel(model="vikhyatk/moondream2", tokenizer="vikhyatk/moondream2")
     print(history)
     res = mdl_instance(messages=history, **req)
-    return res['choices'][0]['message']['content']
+    return res
 
 class Moondream2Bot(fp.PoeBot):
     def __init__(self):
@@ -132,33 +126,33 @@ class Moondream2Bot(fp.PoeBot):
                 with open("tmp.png", "wb") as f:
                     f.write(res.content)
                     f.flush()
-                with PImage.open("tmp.png") as im:
-                    im = im.resize((192,192))
-                    im.save("tmp.png")
-                with open("tmp.png", "rb") as f:
-                    bts = f.read()
-                imgs.append("data:image/png+base64," + base64.b64encode(bts).decode('utf-8'))
+                img = None
+                with PImage.open("tmp.png") as img:
+                    img = img.resize((192,192))
+                    img.save("tmp.png")
+                imgs.append(img)
         if len(imgs) > 0:
             hist[-1] = {
                 "role": "user",
                 "content": [
                     {
                         "type": "text",
-                        "text": "<image>\n" + hist[-1]['content']
+                        "text": hist[-1]['content']
                     }
                 ]
             }
             for img in imgs:
                 hist[-1]['content'].append({
-                    "type": "image_url",
-                    "image_url": img
+                    "type": "image",
+                    "image": img
                 })
+                break
         txt = mkreq(hist)
         print(txt)
         yield fp.PartialResponse(text=txt, is_replace_response=True)
         return
 
-REQUIREMENTS = ["fastapi-poe==0.0.28", "requests", "llama-cpp-python[cuda]", "huggingface-hub", "accelerate", "pillow"]
+REQUIREMENTS = ["fastapi-poe==0.0.28", "requests", "transformers", "einops", "huggingface-hub", "accelerate", "pillow", "torch", "torchvision"]
 image = Image.debian_slim().pip_install(*REQUIREMENTS)
 stub = Stub("dcw-moondream2")
 voldemort = modal.Volume.from_name("voldemort")
