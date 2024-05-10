@@ -28,6 +28,11 @@ class MoondreamModel():
     """
     self.model = AutoModelForCausalLM.from_pretrained(model, cache_dir="/voldemort", device_map="cuda:0", torch_dtype=torch.float16, revision = "2024-04-02", trust_remote_code=True)
     self.tokenizer = AutoTokenizer.from_pretrained(tokenizer, cache_dir="/voldemort", device_map="cuda:0", revision = "2024-04-02", trust_remote_code=True)
+    self.device="cuda:0"
+
+  
+  def format(self, content):
+    return "Hi! I am a visually oriented model. I literally can't think unless I can see something! Send a picture or I probably won't say anything that makes sense! Here's a description of the wall of my cell for you. \n```text\n" + self.model.answer_question(self.model.encode_image(PImage.open("/voldemort/blank.png")), content, self.tokenizer) + "\n```"
 
   def __call__(self, messages, **kwargs):
     """
@@ -52,12 +57,17 @@ class MoondreamModel():
     last_msg = messages[-1]
     img: PImage = None
     content = last_msg['content']
-    for cont in content:
-        if cont['type'] == "image":
-            img = cont['image']
-            img = self.model.encode_image(img)
-            question = last_msg['content'][0]['text']
-            return self.model.answer_question(img, last_msg['content'][0]['text'], self.tokenizer)
+    if type(content) is not str and content is not str:
+        for cont in content:
+            if cont['type'] == "image":
+                img = cont['image']
+                img = self.model.encode_image(img)
+                question = last_msg['content'][0]['text']
+                return "```text\n" + self.model.answer_question(img, last_msg['content'][0]['text'], self.tokenizer)+ "\n```"
+    else:
+
+        return self.format(content)
+
     raise UnboundLocalError("No image found in message")
 
 MAX_TOKENS = 8192
@@ -128,7 +138,7 @@ class Moondream2Bot(fp.PoeBot):
                     f.flush()
                 img = None
                 with PImage.open("tmp.png") as img:
-                    img = img.resize((192,192))
+                    img = img.resize((256,256))
                     img.save("tmp.png")
                 imgs.append(img)
         if len(imgs) > 0:
@@ -154,10 +164,10 @@ class Moondream2Bot(fp.PoeBot):
 
 REQUIREMENTS = ["fastapi-poe==0.0.28", "requests", "transformers", "einops", "huggingface-hub", "accelerate", "pillow", "torch", "torchvision"]
 image = Image.debian_slim().pip_install(*REQUIREMENTS)
-stub = Stub("dcw-moondream2")
+app = Stub("dcw-moondream2")
 voldemort = modal.Volume.from_name("voldemort")
 
-@stub.function(image=image, gpu=modal.gpu.T4(), volumes={"/voldemort": voldemort})
+@app.function(image=image, gpu=modal.gpu.T4(), volumes={"/voldemort": voldemort})
 @asgi_app()
 def fastapi_app():
     bot = Moondream2Bot()
@@ -169,5 +179,4 @@ def fastapi_app():
     # by following the instructions at: https://modal.com/docs/guide/secrets
     POE_ACCESS_KEY = "NhH6TpgRCKaRVpDGIwoULh2ZNwkwqVrU"
     # app = make_app(bot, access_key=POE_ACCESS_KEY)
-    app = fp.make_app(bot, access_key=POE_ACCESS_KEY)
-    return app
+    return fp.make_app(bot, access_key=POE_ACCESS_KEY)
